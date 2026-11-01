@@ -72,9 +72,8 @@ void CPU_HoughTran (unsigned char *pic, int w, int h, int **acc)
 // The accummulator memory needs to be allocated by the host in global memory
 __global__ void GPU_HoughTran (unsigned char *pic, int w, int h, int *acc, float rMax, float rScale, float *d_Cos, float *d_Sin)
 {
-  //TODO calcular: int gloID = ?
-  int gloID = w * h + 1; //TODO
-  if (gloID > w * h) return;      // in case of extra threads in block
+  int gloID = blockIdx.x * blockDim.x + threadIdx.x;
+  if (gloID >= w * h) return;      // in case of extra threads in block
 
   int xCent = w / 2;
   int yCent = h / 2;
@@ -157,7 +156,7 @@ int main (int argc, char **argv)
 
   // execution configuration uses a 1-D grid of 1-D blocks, each made of 256 threads
   //1 thread por pixel
-  int blockNum = ceil (w * h / 256);
+  int blockNum = (w * h + 255) / 256;
   GPU_HoughTran <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
 
   // get results from device
@@ -171,7 +170,15 @@ int main (int argc, char **argv)
   }
   printf("Done!\n");
 
-  // TODO clean-up
+  cudaFree (d_in);
+  cudaFree (d_hough);
+  cudaFree (d_Cos);
+  cudaFree (d_Sin);
+
+  free (h_hough);
+  free (pcCos);
+  free (pcSin);
+  delete[] cpuht;
 
   return 0;
 }
