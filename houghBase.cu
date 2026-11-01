@@ -196,5 +196,7 @@ int main (int argc, char **argv)
   free (pcSin);
   delete[] cpuht;
 
+  cudaDeviceReset();
+
   return 0;
 }
