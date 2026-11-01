@@ -1,0 +1,27 @@
+# Binarios y objetos
+hough
+*.o
+*.out
+a.out
+*.dSYM/
+
+# Artefactos de CUDA
+*.cubin
+*.ptx
+*.fatbin
+*.gpu
+*.cudafe*
+*.fatbin.c
+*.module_id
+*.stub
+
+# macOS
+.DS_Store
+._*
+__MACOSX/
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
