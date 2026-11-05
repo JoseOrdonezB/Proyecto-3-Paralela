@@ -1,4 +1,4 @@
-# Bitácora de tiempos: Global + Constante (Persona 2)
+# Bitácora de tiempos: Global + Constante 
 
 **Programa:** `houghConst.cu` (kernel `GPU_HoughTranConst`, 256 hilos por bloque, un hilo por píxel)
 **Imagen:** `runway.pgm` (800 x 600)
