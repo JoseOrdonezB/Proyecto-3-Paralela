@@ -4,7 +4,10 @@
  Version       : Memoria Global + Memoria Constante   (Persona 2)
  Base          : houghBase.cu (Persona 1, memoria Global + CUDA events)
  To build use  : make houghConst
- To run        : ./houghConst runway.pgm [repeticiones]
+ To run        : ./houghConst runway.pgm [repeticiones] [k] [salida.png]
+                   repeticiones : corridas medidas (default 10)
+                   k            : umbral = promedio + k * desv. est. del acumulador (default 2.0)
+                   salida.png   : imagen con las lineas detectadas (default lineas.png)
  ============================================================================
  Cambios respecto a houghBase.cu:
    - d_Cos y d_Sin ahora viven en memoria Constante (__constant__) con scope
@@ -12,6 +15,8 @@
    - El host las llena con cudaMemcpyToSymbol (antes cudaMemcpy).
    - El kernel GPU_HoughTranConst ya no recibe d_Cos / d_Sin como parametros.
    - Se repite la medicion N veces (por defecto 10) para llenar la bitacora.
+   - Deteccion de lineas por umbral sobre el acumulador y salida .png con las
+     lineas dibujadas en rojo sobre la imagen original (common/lines.cpp).
  ============================================================================
  */
 #include <stdio.h>
@@ -20,6 +25,7 @@
 #include <cuda.h>
 #include <string.h>
 #include "common/pgm.h"
+#include "common/lines.h"
 
 const int degreeInc = 2;
 const int degreeBins = 180 / degreeInc;
@@ -116,6 +122,8 @@ int main (int argc, char **argv)
     }
   int reps = (argc >= 3) ? atoi (argv[2]) : 10;
   if (reps < 1) reps = 10;
+  double kSigma = (argc >= 4) ? atof (argv[3]) : 2.0;       // umbral = media + k * stdev
+  const char *outPng = (argc >= 5) ? argv[4] : "lineas.png";
 
   PGMImage inImg (argv[1]);
 
@@ -189,18 +197,55 @@ int main (int argc, char **argv)
   // Resultado de la ultima corrida -> host
   CUDA_CHECK (cudaMemcpy (h_hough, d_hough, sizeof (int) * degreeBins * rBins, cudaMemcpyDeviceToHost));
 
-  // Validacion contra la version secuencial
-  int mismatches = 0;
+  // Validacion contra la version secuencial.
+  // La CPU calcula r en doble precision (cos/sin devuelven double) y la GPU lo hace
+  // en float con multiplicacion-suma fusionada (FMA). Si r cae casi exactamente en
+  // el borde entre dos bins, el voto puede caer en el bin vecino (mismo theta,
+  // rIdx +-1). Por eso se distingue entre:
+  //   - coincidencia exacta,
+  //   - diferencias de redondeo: |dif| <= 1 y el total de votos es igual,
+  //   - fallo real (cualquier otro caso).
+  int mismatches = 0, maxAbsDiff = 0;
+  long sumCpu = 0, sumGpu = 0;
   for (i = 0; i < degreeBins * rBins; i++)
   {
+    sumCpu += cpuht[i];
+    sumGpu += h_hough[i];
     if (cpuht[i] != h_hough[i])
       {
+        int d = abs (cpuht[i] - h_hough[i]);
+        if (d > maxAbsDiff) maxAbsDiff = d;
+        if (mismatches < 20)
+          printf ("Calculation mismatch at : %i (r=%d, theta=%d) CPU=%i GPU=%i\n",
+                  i, i / degreeBins, i % degreeBins, cpuht[i], h_hough[i]);
         mismatches++;
-        printf ("Calculation mismatch at : %i %i %i\n", i, cpuht[i], h_hough[i]);
       }
   }
-  printf ("Validacion: %s (%d diferencias)\n", mismatches == 0 ? "OK" : "FALLO", mismatches);
+  bool roundingOnly = (mismatches > 0 && maxAbsDiff <= 1 && sumCpu == sumGpu);
+  bool valid = (mismatches == 0) || roundingOnly;
+  if (mismatches == 0)
+    printf ("Validacion: OK (coincidencia exacta con la CPU)\n");
+  else if (roundingOnly)
+    printf ("Validacion: OK con tolerancia (%d de %d bins difieren en +-1 por redondeo float/double; votos totales CPU=%ld GPU=%ld)\n",
+            mismatches, degreeBins * rBins, sumCpu, sumGpu);
+  else
+    printf ("Validacion: FALLO (%d diferencias, max |dif| = %d, votos totales CPU=%ld GPU=%ld)\n",
+            mismatches, maxAbsDiff, sumCpu, sumGpu);
   printf ("Kernel Global+Constante -> promedio: %f ms | desv. est.: %f ms | n = %d\n", mean, stdev, reps);
+
+  // Deteccion de lineas: umbral sobre el acumulador (se usa el resultado de la GPU)
+  AccStats st = computeThreshold (h_hough, rBins, degreeBins, kSigma);
+  std::vector<HoughLine> lines = detectLines (h_hough, rBins, degreeBins, st.threshold);
+  printf ("Acumulador: promedio = %.2f, desv. est. = %.2f -> umbral (k=%.2f) = %.2f\n",
+          st.mean, st.stdev, kSigma, st.threshold);
+  printf ("Lineas detectadas: %zu\n", lines.size ());
+  for (size_t n = 0; n < lines.size (); n++)
+    printf ("  linea %zu: theta = %d grados, r = %.1f px, votos = %d\n", n + 1,
+            lines[n].tIdx * degreeInc, (lines[n].rIdx + 0.5f) * rScale - rMax, lines[n].votes);
+  if (drawLinesPNG (outPng, inImg.pixels, w, h, lines, degreeBins, rMax, rScale, radInc))
+    printf ("Imagen guardada en %s\n", outPng);
+  else
+    fprintf (stderr, "No se pudo escribir %s\n", outPng);
 
   // Liberacion de recursos (las tablas __constant__ no se liberan: son estaticas del modulo)
   cudaFree (d_in);
@@ -216,5 +261,5 @@ int main (int argc, char **argv)
 
   cudaDeviceReset ();
 
-  return mismatches == 0 ? 0 : 1;
+  return valid ? 0 : 1;
 }

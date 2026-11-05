@@ -1,27 +1,6 @@
-# Binarios y objetos
+# binarios y objetos generados por make
 hough
+houghConst
 *.o
-*.out
-a.out
-*.dSYM/
-
-# Artefactos de CUDA
-*.cubin
-*.ptx
-*.fatbin
-*.gpu
-*.cudafe*
-*.fatbin.c
-*.module_id
-*.stub
-
-# macOS
-.DS_Store
-._*
-__MACOSX/
-
-# Editores
-.vscode/
-.idea/
-*.swp
-*~
+# salida generada al correr (las de referencia estan en resultados/)
+/lineas.png
