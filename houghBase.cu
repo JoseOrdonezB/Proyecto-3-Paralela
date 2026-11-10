@@ -13,7 +13,17 @@
 #include <math.h>
 #include <cuda.h>
 #include <string.h>
+#include <cuda_runtime.h>
 #include "common/pgm.h"
+
+// Reportar cualquier fallo CUDA con el archivo y la linea correspondiente.
+#define CUDA_CHECK(call) do { \
+  cudaError_t err = (call); \
+  if (err != cudaSuccess) { \
+    fprintf(stderr, "Error CUDA en %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+    exit(EXIT_FAILURE); \
+  } \
+} while (0)
 
 const int degreeInc = 2;
 const int degreeBins = 180 / degreeInc;
@@ -107,6 +117,10 @@ __global__ void GPU_HoughTran (unsigned char *pic, int w, int h, int *acc, float
 int main (int argc, char **argv)
 {
   int i;
+  if (argc < 2) {
+    fprintf(stderr, "Uso: %s imagen.pgm\n", argv[0]);
+    return EXIT_FAILURE;
+  }
 
   PGMImage inImg (argv[1]);
 
@@ -117,8 +131,8 @@ int main (int argc, char **argv)
   float* d_Cos;
   float* d_Sin;
 
-  cudaMalloc ((void **) &d_Cos, sizeof (float) * degreeBins);
-  cudaMalloc ((void **) &d_Sin, sizeof (float) * degreeBins);
+  CUDA_CHECK(cudaMalloc ((void **) &d_Cos, sizeof (float) * degreeBins));
+  CUDA_CHECK(cudaMalloc ((void **) &d_Sin, sizeof (float) * degreeBins));
 
   // CPU calculation
   CPU_HoughTran(inImg.pixels, w, h, &cpuht);
@@ -138,8 +152,8 @@ int main (int argc, char **argv)
   float rScale = 2 * rMax / rBins;
 
   // TODO eventualmente volver memoria global
-  cudaMemcpy(d_Cos, pcCos, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_Sin, pcSin, sizeof (float) * degreeBins, cudaMemcpyHostToDevice);
+  CUDA_CHECK(cudaMemcpy(d_Cos, pcCos, sizeof (float) * degreeBins, cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_Sin, pcSin, sizeof (float) * degreeBins, cudaMemcpyHostToDevice));
 
   // setup and copy data from host to device
   unsigned char *d_in, *h_in;
@@ -149,54 +163,73 @@ int main (int argc, char **argv)
 
   h_hough = (int *) malloc (degreeBins * rBins * sizeof (int));
 
-  cudaMalloc ((void **) &d_in, sizeof (unsigned char) * w * h);
-  cudaMalloc ((void **) &d_hough, sizeof (int) * degreeBins * rBins);
-  cudaMemcpy (d_in, h_in, sizeof (unsigned char) * w * h, cudaMemcpyHostToDevice);
-  cudaMemset (d_hough, 0, sizeof (int) * degreeBins * rBins);
+  CUDA_CHECK(cudaMalloc ((void **) &d_in, sizeof (unsigned char) * w * h));
+  CUDA_CHECK(cudaMalloc ((void **) &d_hough, sizeof (int) * degreeBins * rBins));
+  CUDA_CHECK(cudaMemcpy (d_in, h_in, sizeof (unsigned char) * w * h, cudaMemcpyHostToDevice));
 
-  // execution configuration uses a 1-D grid of 1-D blocks, each made of 256 threads
-  //1 thread por pixel
-  int blockNum = (w * h + 255) / 256;
-
-  // Medicion del tiempo del kernel con CUDA events
+  // Grid 1D: ceil(numero_pixeles / 256) sin division entera prematura.
+  const int threadsPerBlock = 256;
+  const int blockNum = (w * h + threadsPerBlock - 1) / threadsPerBlock;
+  const int measurements = 10;
+  float times[measurements];
   cudaEvent_t start, stop;
-  cudaEventCreate (&start);
-  cudaEventCreate (&stop);
+  CUDA_CHECK(cudaEventCreate(&start));
+  CUDA_CHECK(cudaEventCreate(&stop));
 
-  cudaEventRecord (start);
-  GPU_HoughTran <<< blockNum, 256 >>> (d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
-  cudaEventRecord (stop);
-  cudaEventSynchronize (stop);
+  // Calentamiento (no se incluye en las mediciones).
+  CUDA_CHECK(cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins));
+  GPU_HoughTran<<<blockNum, threadsPerBlock>>>(d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaDeviceSynchronize());
 
-  float kernelMs = 0.0f;
-  cudaEventElapsedTime (&kernelMs, start, stop);
-
-  // get results from device
-  cudaMemcpy (h_hough, d_hough, sizeof (int) * degreeBins * rBins, cudaMemcpyDeviceToHost);
-
-  // compare CPU and GPU results
-  for (i = 0; i < degreeBins * rBins; i++)
-  {
-    if (cpuht[i] != h_hough[i])
-      printf ("Calculation mismatch at : %i %i %i\n", i, cpuht[i], h_hough[i]);
+  // Cada repeticion parte de un acumulador en cero. Se mide solo el kernel.
+  for (int run = 0; run < measurements; ++run) {
+    CUDA_CHECK(cudaMemset(d_hough, 0, sizeof(int) * degreeBins * rBins));
+    CUDA_CHECK(cudaEventRecord(start));
+    GPU_HoughTran<<<blockNum, threadsPerBlock>>>(d_in, w, h, d_hough, rMax, rScale, d_Cos, d_Sin);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaEventRecord(stop));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&times[run], start, stop));
+    printf("Global,medicion_%02d,%.6f ms\n", run + 1, times[run]);
   }
-  printf("Done!\n");
-  printf ("Tiempo del kernel: %f ms\n", kernelMs);
 
-  cudaFree (d_in);
-  cudaFree (d_hough);
-  cudaFree (d_Cos);
-  cudaFree (d_Sin);
+  CUDA_CHECK(cudaMemcpy(h_hough, d_hough, sizeof(int) * degreeBins * rBins, cudaMemcpyDeviceToHost));
+  int mismatches = 0;
+  int maxDifference = 0;
+  for (i = 0; i < degreeBins * rBins; ++i) {
+    int diff = abs(cpuht[i] - h_hough[i]);
+    if (diff) {
+      ++mismatches;
+      if (diff > maxDifference) maxDifference = diff;
+      if (mismatches <= 10)
+        printf("Diferencia bin %d: CPU=%d GPU=%d\n", i, cpuht[i], h_hough[i]);
+    }
+  }
+  printf("Validacion CPU/GPU: %s; bins diferentes=%d/%d; diferencia maxima=%d\n",
+         mismatches == 0 ? "EXACTA" : "CON DIFERENCIAS",
+         mismatches, degreeBins * rBins, maxDifference);
 
-  cudaEventDestroy (start);
-  cudaEventDestroy (stop);
+  float sum = 0, minTime = times[0], maxTime = times[0];
+  for (i = 0; i < measurements; ++i) {
+    sum += times[i];
+    if (times[i] < minTime) minTime = times[i];
+    if (times[i] > maxTime) maxTime = times[i];
+  }
+  printf("Global: promedio=%.6f ms, minimo=%.6f ms, maximo=%.6f ms\n",
+         sum / measurements, minTime, maxTime);
 
-  free (h_hough);
-  free (pcCos);
-  free (pcSin);
+  CUDA_CHECK(cudaEventDestroy(start));
+  CUDA_CHECK(cudaEventDestroy(stop));
+  CUDA_CHECK(cudaFree(d_in));
+  CUDA_CHECK(cudaFree(d_hough));
+  CUDA_CHECK(cudaFree(d_Cos));
+  CUDA_CHECK(cudaFree(d_Sin));
+  free(h_hough);
+  free(pcCos);
+  free(pcSin);
   delete[] cpuht;
-
-  cudaDeviceReset();
+  CUDA_CHECK(cudaDeviceReset());
 
   return 0;
 }

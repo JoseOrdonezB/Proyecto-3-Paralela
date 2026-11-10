@@ -1,6 +1,65 @@
-# binarios y objetos generados por make
-hough
-houghConst
+
+# ==========================================
+# Proyecto 3 - Computación Paralela (CUDA)
+# ==========================================
+
+# Ejecutables compilados
+/hough
+/houghConst
+/houghShared
+*.exe
+*.out
+
+# Archivos objeto y compilación
 *.o
-# salida generada al correr (las de referencia estan en resultados/)
-/lineas.png
+*.obj
+*.a
+*.so
+*.so.*
+*.d
+*.ptx
+*.cubin
+*.fatbin
+
+# Archivos temporales
+*.tmp
+*.temp
+*.log
+*~
+*.swp
+*.swo
+
+# Archivos de depuración
+core
+core.*
+*.stackdump
+
+# Archivos generados por CUDA
+*.nvvp
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+
+# Caché
+.cache/
+__pycache__/
+
+# Configuración local de editores
+.vscode/
+.idea/
+*.code-workspace
+
+# Archivos del sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Resultados generados automáticamente
+/lineas_shared.png
+/lineas_global.png
+/lineas_constante.png
+
+# Directorios temporales de compilación
+/build/
+/dist/
+/tmp/
